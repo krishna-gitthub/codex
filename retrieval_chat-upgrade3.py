@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 import re
+import textwrap
 
 
 class Retriever:
@@ -58,18 +59,20 @@ class ChatAssistant:
         if not context_chunks:
             return "No relevant context found."
         context = "\n\n".join(context_chunks)
-        prompt = f"""
-You are a reasoning assistant. Use the provided context to compute and explain your answer step by step.
-If the answer requires math, show logical estimates.
+        prompt = textwrap.dedent(
+            f"""\
+            You are a reasoning assistant. Use the provided context to compute and explain your answer step by step.
+            If the answer requires math, show logical estimates.
 
-[Context]
-{context}
+            [Context]
+            {context}
 
-[User Question]
-{query}
+            [User Question]
+            {query}
 
-[Answer]
-"""
+            [Answer]
+            """
+        )
         resp = httpx.post(
             f"{self.base_url}/v1/chat/completions",
             json={
