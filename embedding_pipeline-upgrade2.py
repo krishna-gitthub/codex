@@ -50,34 +50,32 @@ class Embedder:
         return np.asarray(results, dtype=np.float32)
 
 def chunk_pdf(pdf_path: Path, chunk_size: int = 512, overlap: int = 64) -> List[str]:
-    reader = PdfReader(str(pdf_path))
-    chunks: List[str] = []
+    """Split *pdf_path* into text chunks of ``chunk_size`` characters.
 
+    ``overlap`` controls the sliding window so that the start of each chunk
+    begins ``chunk_size - overlap`` characters after the previous one.
+    """
+
+    reader = PdfReader(str(pdf_path))
+
+    # Collect the document text sentence by sentence for cleaner splits
+    sentences: List[str] = []
     for page in reader.pages:
-        text = page.extract_text() or ""
-        sentences = sent_tokenize(text)
-        chunk = ""
-        for sentence in sentences:
-            if len(chunk) + len(sentence) <= chunk_size:
-                chunk += " " + sentence
-            else:
-                chunks.append(chunk.strip())
-                chunk = sentence
-        if chunk:
-            chunks.append(chunk.strip())
+        page_text = page.extract_text() or ""
+        sentences.extend(sent_tokenize(page_text))
+
+    text = " ".join(sentences)
+
+    step = max(chunk_size - overlap, 1)
+    chunks = [
+        text[i : i + chunk_size].strip()
+        for i in range(0, len(text), step)
+        if text[i : i + chunk_size].strip()
+    ]
 
     return chunks
 
 
-"""def chunk_pdf(pdf_path: Path, chunk_size: int, overlap: int = 64) -> List[str]:
-    reader = PdfReader(str(pdf_path))
-    chunks: List[str] = []
-    for page in reader.pages:
-        text = page.extract_text() or ""
-        for i in range(0, len(text), chunk_size - overlap):
-            chunk = text[i : i + chunk_size]
-            chunks.append(chunk)
-    return chunks"""
 
 
 def build_index(embeddings: np.ndarray) -> faiss.Index:
