@@ -7,7 +7,6 @@ import httpx
 import faiss
 import numpy as np
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
 import re
 
 
@@ -19,7 +18,6 @@ class Retriever:
         df = pd.read_csv(chunk_path)
         self.metadata = df.to_dict(orient="records")
         self.embeddings = np.load(index_path.parent / "embeddings.npy")
-        self.embeddings = self.embeddings / np.linalg.norm(self.embeddings, axis=1, keepdims=True)
 
     def embed_query(self, query: str) -> np.ndarray:
         resp = httpx.post(
@@ -37,14 +35,15 @@ class Retriever:
 
     def search(self, query: str, k: int = 20) -> List[str]:
         qv = self.embed_query(query)
-        scores = cosine_similarity(qv, self.embeddings)[0]
-        ranked = [
-            (score, self.metadata[i])
-            for i, score in enumerate(scores)
-            if "chunk" in self.metadata[i] and self.has_number(self.metadata[i]["chunk"])
-        ]
-        ranked.sort(key=lambda x: x[0], reverse=True)
-        return [entry["chunk"] for _, entry in ranked[:k]]
+        distances, indices = self.index.search(qv, k)
+        chunks = []
+        for idx in indices[0]:
+            if idx == -1:
+                continue
+            entry = self.metadata[idx]
+            if "chunk" in entry and self.has_number(entry["chunk"]):
+                chunks.append(entry["chunk"])
+        return chunks
 
 
 class ChatAssistant:
