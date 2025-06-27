@@ -13,6 +13,7 @@ import argparse
 from nltk.tokenize import sent_tokenize
 from tqdm.asyncio import tqdm_asyncio
 
+
 class Embedder:
     """Client for batch embedding via LM Studio."""
 
@@ -22,24 +23,34 @@ class Embedder:
         model_name: str,
         batch_size: int = 32,
         concurrency: int = 4,
+        retries: int = 3,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
         self.batch_size = batch_size
         self.semaphore = asyncio.Semaphore(concurrency)
-
+        self.retries = retries
 
     async def _embed_batch(
         self, client: httpx.AsyncClient, texts: List[str]
     ) -> List[List[float]]:
         async with self.semaphore:
-            resp = await client.post(
-                f"{self.base_url}/v1/embeddings",
-                json={"model": self.model_name, "input": texts},
-                timeout=600,
-            )
-            resp.raise_for_status()
-            return [d["embedding"] for d in resp.json()["data"]]
+            last_exc: Exception | None = None
+            for attempt in range(1, self.retries + 1):
+                try:
+                    resp = await client.post(
+                        f"{self.base_url}/v1/embeddings",
+                        json={"model": self.model_name, "input": texts},
+                        timeout=600,
+                    )
+                    resp.raise_for_status()
+                    return [d["embedding"] for d in resp.json()["data"]]
+                except httpx.HTTPError as exc:
+                    last_exc = exc
+                    if attempt < self.retries:
+                        await asyncio.sleep(2**attempt)
+            assert last_exc is not None
+            raise last_exc
 
     async def embed_texts(self, texts: List[str]) -> np.ndarray:
         async with httpx.AsyncClient() as client:
@@ -49,23 +60,15 @@ class Embedder:
             ]
             # Progress bar for async tasks
             results_nested = []
-            for coro in tqdm_asyncio.as_completed(tasks, total=len(tasks), desc="Embedding"):
+            for coro in tqdm_asyncio.as_completed(
+                tasks, total=len(tasks), desc="Embedding"
+            ):
                 results_nested.append(await coro)
 
         results = [vec for batch in results_nested for vec in batch]
         return np.asarray(results, dtype=np.float32)
 
-"""
-    async def embed_texts(self, texts: List[str]) -> np.ndarray:
-        async with httpx.AsyncClient() as client:
-            tasks = [
-                self._embed_batch(client, texts[i : i + self.batch_size])
-                for i in range(0, len(texts), self.batch_size)
-            ]
-            results_nested = await asyncio.gather(*tasks)
-        results = [vec for batch in results_nested for vec in batch]
-        return np.asarray(results, dtype=np.float32)
-"""
+
 def chunk_pdf(pdf_path: Path, chunk_size: int = 512, overlap: int = 64) -> List[str]:
     """Split *pdf_path* into text chunks of ``chunk_size`` characters.
 
@@ -93,8 +96,6 @@ def chunk_pdf(pdf_path: Path, chunk_size: int = 512, overlap: int = 64) -> List[
     return chunks
 
 
-
-
 def build_index(embeddings: np.ndarray) -> faiss.Index:
     dim = embeddings.shape[1]
     index = faiss.IndexHNSWFlat(dim, 32)
@@ -112,19 +113,39 @@ def save_artifacts(
     np.save(str(output_dir / "embeddings.npy"), embeddings)
 
 
-async def main(pdf_path: str, base_url: str, model: str, output_dir: str) -> None:
+async def main(
+    pdf_path: str,
+    base_url: str,
+    model: str,
+    output_dir: str,
+    concurrency: int = 4,
+    retries: int = 3,
+) -> None:
     chunks = chunk_pdf(Path(pdf_path), chunk_size=512, overlap=64)
-    embedder = Embedder(base_url, model)
+    embedder = Embedder(base_url, model, concurrency=concurrency, retries=retries)
     embeddings = await embedder.embed_texts(chunks)
     index = build_index(embeddings)
     save_artifacts(index, chunks, embeddings, Path(output_dir))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate embeddings and FAISS index from a PDF")
+    parser = argparse.ArgumentParser(
+        description="Generate embeddings and FAISS index from a PDF"
+    )
     parser.add_argument("--pdf-path", default="PDFs/Mahabharata.pdf")
     parser.add_argument("--base-url", default="http://localhost:1234")
     parser.add_argument("--model", default="text-embedding-qwen3-embedding-0.6b")
     parser.add_argument("--output-dir", default="embeddings/Mahabharatam2")
+    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--retries", type=int, default=3)
     args = parser.parse_args()
-    asyncio.run(main(args.pdf_path, args.base_url, args.model, args.output_dir))
+    asyncio.run(
+        main(
+            args.pdf_path,
+            args.base_url,
+            args.model,
+            args.output_dir,
+            args.concurrency,
+            args.retries,
+        )
+    )
